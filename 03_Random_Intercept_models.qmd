@@ -1,0 +1,648 @@
+---
+title: "Chapter 3. Random-intercept models with covariates"
+author: 
+- JoonHo Lee (jlee296@ua.edu)
+- Mehdi Rajeb
+date: "November27, 2022"
+format: html
+---
+
+
+```{r setup, include=FALSE}
+#| label: load-packages
+#| #| include: false
+library(tidyverse)
+library(haven)
+library(broom)
+library(janitor)
+library(dplyr)
+library(multcomp)
+library(foreign)
+library(lme4)
+library(lmerTest)
+library(lmtest)
+library(sandwich)
+library(ggplot2)
+library(sjPlot)
+library(sjstats)
+library(plm)
+library(predictmeans)
+library(epiDisplay)
+```
+
+# Introduction (3.1)
+In this chapter, the variance-component model is extended to introduce random-intercept models with covariates.Readers can easily identify several overlapping features of variance-component models with random-intercept model, however, this chapter will introduce the differences between within-cluster and between-cluster covariate effects.
+
+## Does smoking during pregancy affect birthweight? (3.2)
+
+The data used in this chapter investigates the effect of smoking on birth outcomes with the Natality data sets derived from birth certificates by the U.S. National Center for Health Statistics. The dataset used by @abrevaya2006estimating is available from the Journal of Apllied Econometrics Data Archive. The data set contains 8604 births from 3978 mothers. Also following variables are available in the data set `smoking.dta`.
+
+
+* `momid`: mother identifier
+
+* `birwt`: birth weight (in grams)
+
+* `smoke`: dummy variable for mother smoking during pregnancy (1: smoking; 0: not smoking)
+
+* `male`: dummy variable for baby being male (1: male , 0: female)
+
+* `meduc`: mother's education (reference category: did not graduate from high school)
+
+  * `hsgrad`: dummy variable for having graduated from high school ( 1: graduated; 0: otherwise)
+
+  * `somecoll`: dummy variable for having some college education, but no degree (1: some college; 0: otherwise)
+
+  * `collgrad`: dummy variable for having graduated from college (1: graduated; 0: otherwise)
+
+* `married`: dummy variable for mother being married (1: married; 0: unmarried)
+
+* `black` : dummy variable for mother being Black(1: Black; 0: White)
+
+* Kessner index (reference category: Kessner index = 1, or adequate prenatal care)
+
+  * `kessner2`: dummy variable for Kessner index = 2, or intermediate prenatal care (1: index = 2; 0: otherwise)
+
+  * `kessner3`: dummy variable for Kessner index = 3, or inadequate prenatal care (1: index=3; 0: otherwise)
+
+* Timing of first prenatal visit(reference category: first trimester)
+
+  * `novisit`: dummy variable for no prenatal care visit(1: no visit; 0: otherwise)
+
+  * `pretri2`: dummy variable for first prenatal care visit having occurred in second trimester( 1: yes; 0: otherwise)
+
+  * `pretri3`: dummy variable for first prenatal care visit having occurred in third trimester (1: yes; 0: otherwise)
+  
+ 
+## Data structure and descriptive statistics(3.2.1)
+The data has two-level structure with births (or children or pregnancies) as unit level 1 and mothers as cluster at level 2. It is important to understand that in multilevel models, the dependent / response variable varies at the lowest level for different values of different level 1 units within the same level of cluster. It is also important to understand whether variables vary at levels 1 and levels 2 but also to understand how much they vary at each of the levels.
+
+let us have a look at the `smoking.dta` data set. 
+
+```{r}
+# Let us get the data loaded in R
+df <- read_dta("smoking.dta")
+
+# let us have a look at the data.
+head(df)
+
+```
+
+
+It is useful to know not just whether variables vary at levels 1 and 2 but also how much they vary at each of the levels. To do so, we write the following R-function for specific variables. 
+
+
+```{r}
+# R code for xtsum function
+# Let us select the variables of interests.
+df_temp <- df %>%
+  dplyr::select(momid, idx, birwt, smoke, black)
+
+
+# my_xtsum function: equivalent to Stata's xtsum command. 
+my_xtsum <- function(data, group_id, y){
+  # Define a function to calculate summary statistics
+  sum_stat <- function(data, y ){
+    data %>%
+      summarize(
+        Mean = mean({{y}}, na.rm = TRUE), 
+        Std.dev. = sd({{y}}, na.rm = TRUE), 
+        Min = min({{y}}, na.rm = TRUE), 
+        Max = max({{y}}, na.rm = TRUE), 
+        N = n()
+      )
+  }
+  # Overall 
+  vec_overall <- data %>%
+    sum_stat({{y}})
+  
+  # Between
+  vec_between <- data %>%
+    group_by({{group_id}}) %>%
+    summarize(
+      gr_mean = mean({{y}}, na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    sum_stat(y = gr_mean)
+  
+  # Within
+  vec_within <- data %>%
+    group_by({{group_id}}) %>%
+    mutate(
+      gr_mean = mean({{y}}, na.rm = TRUE), 
+      dev = {{y}} - gr_mean, 
+      size = n()
+    ) %>%
+    ungroup() %>%
+    summarize(
+      Mean = mean(dev, na.rm = TRUE) + vec_overall$Mean, 
+      Std.dev. = sd(dev, na.rm = TRUE), 
+      Min = min(dev, na.rm = TRUE) + vec_overall$Mean, 
+      Max = max(dev, na.rm = TRUE) + vec_overall$Mean, 
+      N = mean(size)
+    )
+  
+  xtsum<- bind_rows(
+    vec_overall, 
+    vec_between, 
+    vec_within
+    )
+  xtsum<- as.data.frame(xtsum)
+  rownames(xtsum)<- c("overall", "between", "within") 
+  xtsum
+}
+
+
+```
+
+We specified the `my_xtsum()` function. Let us calculate the between group and within group summary statistics.
+
+* Summary statistics for `birwt`
+
+```{r}
+# Summary statistics of birwt
+my_xtsum(df_temp, momid, birwt)
+```
+
+
+* Summary statistics for `smoke`
+```{r}
+# Summary statistics of Smoke
+my_xtsum(df_temp, momid, smoke)
+```
+
+* Summary statistics for `black`
+
+```{r}
+# Summary statistics of black
+my_xtsum(df_temp, momid, black)
+```
+
+In this case, the total number of observations is N =8604 and the number of clusters is 3978. 
+
+Lets consider the mean across mothers, or the proportion of mothers who are `black`. 
+
+```{r}
+# Summarizeing data for only unique mothers who are black. 
+
+df_black<- df %>% 
+  group_by(momid) %>% 
+  mutate(mean_black = mean(black, na.rm=TRUE)) %>% 
+  ungroup() %>% 
+  distinct(momid, .keep_all = T) %>% 
+  summarise( 
+             Obs = n(), 
+             Mean = mean(mean_black, na.rm = T), 
+             Std.Dev. = sd(mean_black, na.rm= T), 
+             Min = min(mean_black, na.rm=T), 
+             Max = max(mean_black, na.rm=T)
+             )
+df_black <- as.data.frame(df_black)
+rownames(df_black)<- c('black')
+df_black
+
+```
+
+We can also calculate the number of children per mother. 
+
+```{r}
+# Counting number of child per mother
+df_child <- df %>% 
+  dplyr::select(momid) %>% 
+  group_by(momid) %>% 
+  mutate(Nc = n())%>% 
+  ungroup() %>% 
+  distinct(momid, .keep_all = T) 
+
+# Frequency distribution for children per mother.
+epiDisplay::tab1(df_child$Nc,  cum.percent = T)
+```
+
+For level-1 variables such as smoke, we can also produce tables of overall summaries.
+
+```{r}
+#Overall percentage of smokers
+epiDisplay::tab1(df$smoke, cum.percent = F)
+
+```
+
+We can also calculate `between-group` percentages.
+
+```{r}
+# Between group percentages.
+# Group percentages for smokers
+btwn_s<- df %>% 
+  dplyr::select(momid, smoke) %>%
+  summarise(
+    N = n_distinct(momid),
+    momid= momid, 
+    smoke = smoke
+    ) %>% 
+  filter(smoke == 1) %>% 
+  group_by(momid) %>%
+  ungroup() %>% 
+  distinct(momid, .keep_all = T) %>% 
+  dplyr::summarise(
+    Freq = n(), 
+    Percent = Freq/N[1]
+    ) 
+  
+  #Group percentages for non-smokers
+btwn_ns<- df %>% 
+  dplyr::select(momid, smoke) %>%
+  summarise(
+    N = n_distinct(momid),
+    momid= momid, 
+    smoke = smoke
+    ) %>% 
+  filter(smoke == 0) %>% 
+  group_by(momid) %>%
+  ungroup() %>% 
+  distinct(momid, .keep_all = T) %>% 
+  summarise(
+    Freq = n(), 
+    Percent = Freq/N[1]
+    ) 
+
+# Binding group percentages for smokers and non-smokers
+btwn<- rbind(btwn_ns, btwn_s)
+btwn<- as.data.frame(btwn)
+rownames(btwn)<- c("Nonsmoke", "smoke")
+btwn
+
+```
+
+# The linear random-intercept model with covariates 
+
+## Model estimation using R (3.4)
+
+### Using `plm` function (3.4.1)
+
+We can us different R function to fit random-intercept models by maximum likelihood (ML) method. We can also estimate the random-intercept models using restricted maximum-likelihood estimation (REML) methods.To estimate random intercept model, we can use R-PLM package, and `plm` function 
+
+```{r}
+# To estimate random intercept model, we can use R-PLM package, and plm function. 
+model_formula_1<- birwt ~ smoke + male+ mage + hsgrad +somecoll+ collgrad+ married +black+ kessner2+ kessner3+ novisit +pretri2 +pretri3
+model_1<- plm(
+           formula= model_formula_1, 
+           data = df, 
+           model = "random", 
+           index = c("momid"),
+           vcov = vcovHC
+           )
+summary(model_1)
+
+```
+
+The error estimates in the estimated model are not robust. To estimate the robust standard errors, we need to run additional codes.
+
+```{r}
+# Let us use the following code to obtain the robust standard errors.
+model_2<- coeftest(
+                 model_1, 
+                 vcov.=function(x)vcovHC(x, type ='sss')
+                 )
+
+# Let us have a look at the estimates now. 
+model_2
+
+```
+
+we may also separate the estimated coefficients from the model summary.
+
+```{r}
+# Estimated coefficients.
+summary(model_1)$coefficients
+```
+### Using `lme` function from `lme4` R-package 
+
+
+We can also use lme4 R-package to estimate the model. 
+
+
+```{r}
+# Estimated random intercept model using lme4 package.
+model_formmula_3<-birwt ~ smoke + male+ mage + hsgrad +somecoll+ collgrad+ married +black+ kessner2+ kessner3+ novisit +pretri2 +pretri3 + (1|momid)
+
+model_3<-lmer(
+           formula= model_formmula_3,
+           data = df, 
+           REML = FALSE
+           )
+summary(model_3)
+```
+
+
+Let us calculate the intra-class correlation. To get the intra-class correlation, we may wish to use the `performance` R-package.
+
+```{r}
+# Intra-class correlation.
+performance::icc(model_3)
+```
+
+
+# Coefficients of determinations or variance explained (3.5)
+
+Coefficients of determination is denoted by R-squred, and can be explained as the proportional reduction in prediction error variance, comparing the model of interest that does not include any covariate. 
+
+Let us first fit the null model (unconditional model). 
+
+```{r}
+# Estimation of null model
+model_formmula_4 <-birwt ~ (1|momid)
+model_4<- lmer(
+            formula= model_formmula_4, 
+            data = df, 
+            REML = F)
+summary(model_4)
+
+```
+Let us now fit a random-intercept model that includes only level-2 covariates
+
+
+```{r}
+# Estimation of random-intercept model with level 2 variables.
+model_formula_5 <-birwt~ hsgrad + somecoll+ collgrad+ married+ black+(1|momid)
+model_5<- lmer(
+               formula = model_formula_5, 
+               data=df, 
+               REML= F)
+
+summary(model_5)
+
+
+```
+
+
+# Hypothesis tests and confidence intervals (3.6)
+
+## Hypothesis tests for inidividual regression coefficients (3.6.1)
+
+The most common hypothesis test for individual regression coefficient is given below. 
+
+Considering the $\beta_2$ as the coefficient of interest, the hypothesis is:
+
+$H_0 : \beta_2 = 0$
+vs
+$H_a : \beta_2 = 0$
+
+To test the hypothesis, following test statistic is used. 
+
+$z = \frac{\widehat{\beta_2}}{\widehat{SE}(\widehat{\beta})}$
+
+
+Let us fit the random-effect model. 
+
+```{r}
+# Random effect model explaining birth weight.
+model_formula_6<-birwt ~ smoke + male+ mage + hsgrad +somecoll+ collgrad+ married +black+ kessner2+ kessner3+ novisit +pretri2 +pretri3 + (1|momid)
+model_6<- lmerTest::lmer(
+                         formula= model_formula_6,
+                         data = df, 
+                         REML= TRUE
+                         )
+
+summary(model_6)
+
+```
+
+We can also separate the estimated coefficients from the estimated model. 
+
+```{r}
+# Coefficients from estimated random effect model
+summary(model_6)$coefficients
+```
+
+## Joint hypothesis test for several regression coefficient (3.6.2). 
+
+Let us consider a null hypothesis that the regression coefficients of two covariates $x_{2ij}$ and  $x_{3ij}$ are both 0. 
+
+So the  hypothesis is:
+
+$H_0 : \beta_2 = \beta_3 = 0$
+
+vs
+
+$H_a$ : At least one of the parameter is nonzero. 
+
+We can perform Wald test to check the above hypothesis.  We can also check all $\beta$ coefficients at a time. The following R-code shows Chi-square tests to check for the significance of each variable used in the random effect model. 
+
+```{r}
+# Let us specify the random effect model first.
+# We need to use glmer() function in lme4 package to perform chi-square test. 
+model_formula_7<-birwt ~ smoke + male+ mage + hsgrad +somecoll+ collgrad+ married +black+ kessner2+ kessner3+ novisit +pretri2 +pretri3 + (1|momid)
+model_7<- glmer(
+                 formula= model_formula_7,
+                 data = df 
+                 )
+
+# Test of significance of coefficients. 
+drop1(model_7, test = "Chisq")
+
+```
+
+Based on the LRT values and Pr(Chi) values of kessner2 and kessner3, we may reject the null hypothesis, and may conclude that both kessner 2 and kessner3 have significant affect on birth weight. 
+
+If the number of cluster is small, with j-q < 42, it is better to perform an approximate F test, which can be obtained by estimating the model by using `lmer()` function with `RMEL = T` option. In addition to providing a finite-sample approximation to the sampling distribution, this approach also has the advantage that the standard errors perform better than ML-based or robust standard errors when the number of cluster is small.
+
+In R, we can perform F test for all $\beta$ -coefficients at a time. In this case, we use a R-package called "predictmeans". 
+
+
+```{r}
+# Let us specify the the random effect model using lme4::lmer() function.
+# We are using RMEL method for the model estimation.
+model_formula_8 <-birwt ~ smoke + male+ mage + hsgrad +somecoll+ collgrad+ married +black+ kessner2+ kessner3+ novisit +pretri2 +pretri3 + (1|momid)
+model_8<- lmer(
+               formula = model_formula_8,
+               data = df, 
+               REML = T
+               )
+
+# Testing all parameters of random effect model using F-test.
+
+anova(model_8)
+
+```
+
+Moreover, if we wish to test the significance of Kessner2 and Kessner3 only, in that case we can specify two models i.e., first model with all variables, and the second model with all variables excluding Kessner2 and Kessner3. Then we can compare the models to check significance of these variables. 
+
+For instance, we are trying to test the following hypothesis. 
+
+$H_0 : \beta_2 = \beta_3 = 0$
+
+vs
+
+$H_a$ : At least one of the parameter is nonzero. 
+
+
+We can perform a likelihood-ratio test, and the test statistic is 
+
+$L= 2(l_1-l_0)$
+
+Where $l_1$ and  $l_0$ are now the maximized log likelihoods for the models including and excluding both kessner2 and kessner3, respectively. 
+
+Under the null hypothesis, the likelihood-ratio statistic also has an asymptotic $\chi^2$ distribution. 
+
+A likelihod-ratio test of the null hypothesis that the coefficients of the dummy variables kessner2 and kessner3 are both 0 can be performed by estimating both models by maximum likelihood and then using `anova()` function. 
+
+```{r}
+# Let us specify random effect model with kessner2 and kessner3
+formula_model_9 <- birwt ~ smoke + male+ mage + hsgrad +somecoll+ collgrad+ married +black+ kessner2+ kessner3+ novisit +pretri2 +pretri3 + (1|momid)
+model_9<-lmer(
+              formula = formula_model_9,
+              data = df, 
+              REML = F
+              )
+
+
+#Let us specify random effect model without kessner2 and kessner3
+formula_model_10<-birwt ~ smoke + male+ mage + hsgrad +somecoll+ collgrad + married +black+novisit +pretri2 +pretri3 + (1|momid)
+model_10<-lmer(
+           formula = formula_model_10,
+           data = df, 
+           REML = F
+           )
+
+# Let us perform the likelihood ratio test
+anova(model_9, model_10)
+
+```
+# Between and within effects of level-1 covariates (3.7)
+
+We now turn to the estimated regression coefficients for the random intercept model with covariates. We will proceed to analyse between mother comparisons, and within-mother comparisons. 
+
+
+## Between-mother effects(3.7.1)
+
+To estimate between-mother effects we can use `plm()' function of plm R-package. 
+
+
+```{r}
+# Let us specify the model using plm() function for estimating between mother effects.
+formula_model_11<- birwt ~ smoke + male+ mage + hsgrad + somecoll + collgrad+ married +black+ kessner2+ kessner3+ novisit +pretri2 +pretri3
+model_11<- plm(
+               formula = formula_model_11, 
+               data = df, 
+               model = "between", 
+               index = c("momid")
+               )
+
+summary(model_11)
+
+```
+
+## Within-mother effects(3.7.2)
+
+To estimate between-mother effects we can use `plm()' function of plm R-package. 
+
+
+```{r}
+# Let us specify the model using plm() function for estimating between mother effects.
+formula_model_12<-birwt ~ smoke + male+ mage + hsgrad + somecoll + collgrad+ married +black+ kessner2+ kessner3+ novisit +pretri2 +pretri3
+
+model_12<- plm(
+           formula= formula_model_12, 
+           data = df, 
+           model = "within", 
+           index = c("momid")
+           )
+
+summary(model_12)
+
+```
+
+## Random intercept model 
+
+For comparison purpose, let us also estimate the random intercept model using `plm()' function of plm R-package. 
+
+
+```{r}
+# Let us specify the model using plm() function for estimating between mother effects.
+formula_model_13 <- birwt ~ smoke + male+ mage + hsgrad + somecoll + collgrad+ married +black+ kessner2+ kessner3+ novisit +pretri2 +pretri3
+model_13<- plm(
+           formula = formula_model_13, 
+           data = df, 
+           model = "random", 
+           index = c("momid")
+           )
+
+summary(model_13)
+
+```
+
+##  Conventional Hausman Test(3.7.5)
+
+The Hauseman test can be used to compare two alternative estimators of $\beta$, both of which are consistent if the model is correct. In its standard form, one of the estimator is asymptotically efficient if the model is correct, but is inconsistent when the model is misspecified. 
+
+Hausemen test can be easily performed using `phtest()` function in plm R-package. 
+
+```{r}
+# Let us use mod11 and mod12 to perform the Hauseman test.
+plm::phtest(model_11, model_12)
+
+```
+
+There is a strong evidence for model misspecification as Hausment test returned with a p-value <0.001.
+
+
+
+## Allowing for different within and between effects(3.7.6)
+
+
+We will now estimate random intercept model with the cluster mean of smoke (i.e., the proportion of pregnancies in which the mother smokes), as well as the child-specific deviation from the cluster mean of smoke as covariates. Before we proceed with the modeling part, we need to restructure the data and calculate the clustered means for different mothers. 
+
+```{r}
+# We are creating mn_smoke and dev_smok variables in df1 dataset.
+df1<-df %>% 
+  group_by(momid) %>% 
+  mutate(mn_smoke = mean(smoke, na.rm =T)) %>% 
+  mutate(dev_smoke = (smoke - mn_smoke))
+
+# Estimation of random-effect model using `lmer()` function
+model_formula_14<- birwt ~ dev_smoke + mn_smoke + male+ mage + hsgrad + somecoll + collgrad  + married +black+kessner2+ kessner3+novisit +pretri2 +pretri3 + (1|momid)
+
+model_14<-lmer(
+              formula=model_formula_14 , 
+              data = df1, 
+              REML = F
+              )
+
+summary(model_14)
+
+
+```
+
+
+To estimate the clustering effects of other variables in the dataset, let us calculate means of other variables by momid. 
+
+```{r}
+# We already have mn_smoke. So let us calculate mean of other variable groupe by momid. 
+df2 <- df1 %>% 
+  group_by(momid) %>% 
+  mutate(mn_male = mean(male, na.rm =T), 
+         mn_mage = mean(mage, na.rm =T),
+         mn_kessner2 = mean(kessner2, na.rm =T),
+         mn_kessner3 = mean(kessner3, na.rm =T),
+         mn_novisit = mean(novisit, na.rm =T),
+         mn_pretri2 = mean(pretri2, na.rm =T), 
+         mn_pretri3 = mean(pretri3, na.rm = T)
+         ) 
+
+```
+
+Now, let us estimate the random-effect model using cluster means of all level-1 covariates and the level-1 covariates. 
+
+```{r}
+# estimation of the random-effect model using cluster means of all level-1 covariates and the level-1 covariates
+model_formula_15 <-birwt ~ smoke + male+ mage + hsgrad + somecoll + collgrad  + married +black+kessner2+ kessner3+novisit +pretri2 +pretri3 +
+              + mn_smoke + mn_male + mn_mage + mn_kessner2 + mn_kessner3 + mn_novisit + mn_pretri2 + mn_pretri3 + (1|momid)
+
+model_15<-lmer(
+            formula = model_formula_15, 
+            data = df2, 
+            REML = F
+            )
+summary(model_15)
+```
+
+
+
